@@ -25,12 +25,23 @@ public final class MetroDict {
     public static final List<String> FLOW_ORDER = List.of(
             "RECEIVED", "CALIBRATING", "VERIFYING", "CERTIFYING", "ISSUED");
 
+    /** 作废：终态之一，不在 FLOW_ORDER 推进链上，仅用于展示与拦截 */
+    public static final String STATUS_VOID = "VOID";
+
     private static final Map<String, String> FLOW_STATUS = Map.of(
             "RECEIVED", "收样",
             "CALIBRATING", "检定中",
             "VERIFYING", "核验",
             "CERTIFYING", "出证",
-            "ISSUED", "已发放");
+            "ISSUED", "已发放",
+            "VOID", "已作废");
+
+    /** 挂接释放原因（lab_order_device.release_reason） */
+    private static final Map<String, String> RELEASE_REASON = Map.of(
+            "REPLACE", "清单替换",
+            "ROLLBACK_RECEIVED", "检定退回收样",
+            "VOID", "委托作废",
+            "ISSUED", "完成发放");
 
     // ---------------- 检定结论 ----------------
     private static final Map<String, String> CONCLUSION = Map.of(
@@ -74,6 +85,15 @@ public final class MetroDict {
     public static int flowIndex(String status) {
         int index = FLOW_ORDER.indexOf(status);
         return index < 0 ? 0 : index;
+    }
+
+    /** 作废等非流转链状态不参与推进/回退序号 */
+    public static boolean isFlowStatus(String status) {
+        return status != null && FLOW_ORDER.contains(status);
+    }
+
+    public static String releaseReasonName(String reason) {
+        return reason == null ? "" : RELEASE_REASON.getOrDefault(reason, reason);
     }
 
     public static boolean isValidConclusion(String conclusion) {

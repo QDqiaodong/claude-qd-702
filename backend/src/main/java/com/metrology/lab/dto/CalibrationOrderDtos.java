@@ -1,5 +1,7 @@
 package com.metrology.lab.dto;
 
+import java.util.List;
+
 import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
 
@@ -64,5 +66,16 @@ public final class CalibrationOrderDtos {
 
         /** 证书有效期至 yyyy-MM-dd，可空：按器具检定周期自动推算 */
         private String certValidUntil;
+    }
+
+    /**
+     * 挂接清单保存（挂接 / 替换 / 解除统一入口：全量提交参与本次检定的标准器 id 列表）。
+     * 空列表 = 解除全部；能否调整、是否冲突、证书是否有效一律由服务端在一个事务内最终判定。
+     */
+    @Data
+    public static class DeviceAttachReq {
+
+        /** 选中的标准器 id，可空/空数组表示解除全部挂接 */
+        private List<Long> deviceIds;
     }
 }

@@ -5,6 +5,7 @@ import java.util.List;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -42,5 +43,12 @@ public class StandardDeviceController {
     public ApiResponse<Views.DeviceView> setStatus(@PathVariable Long id,
                                                    @RequestBody @Valid StandardDeviceDtos.StatusReq req) {
         return ApiResponse.success("标准器状态已更新", deviceService.setStatus(id, req.getStatus()));
+    }
+
+    /** 修订档案/证书（含把有效期改早）：占用它的未完成委托下一次流转会被服务端拦下 */
+    @PutMapping("/{id}")
+    public ApiResponse<Views.DeviceView> update(@PathVariable Long id,
+                                                @RequestBody StandardDeviceDtos.DeviceUpdateReq req) {
+        return ApiResponse.success("标准器档案已修订", deviceService.update(id, req));
     }
 }

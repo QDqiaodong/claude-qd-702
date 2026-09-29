@@ -10,6 +10,7 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 import lombok.Data;
 
 /**
@@ -69,6 +70,11 @@ public class CalibrationOrder {
 
     @Column(name = "status", nullable = false, length = 20)
     private String status;
+
+    /** 乐观锁：并发重复提交/抢占时，只有一笔能改写委托状态 */
+    @Version
+    @Column(name = "version", nullable = false)
+    private Integer version;
 
     @Column(name = "cert_valid_until")
     private LocalDate certValidUntil;

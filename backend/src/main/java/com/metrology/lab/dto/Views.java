@@ -118,12 +118,68 @@ public final class Views {
             String certNo,
             String status,
             String statusName,
-            /** 流转序号：0 收样 … 4 已发放 */
+            /** 流转序号：0 收样 … 4 已发放；作废为 -1 */
             Integer stepIndex,
             LocalDate certValidUntil,
             BigDecimal fee,
             String remark,
-            LocalDateTime updatedAt) {
+            LocalDateTime updatedAt,
+            /** 当前占用中的标准器挂接项 */
+            List<DeviceLinkView> devices,
+            /** 已释放的历史挂接项（替换 / 退回收样 / 作废 / 发放留痕） */
+            List<DeviceLinkView> releasedDevices,
+            /** 当前占用标准器数量 */
+            int deviceCount,
+            /** 占用标准器中最早的证书到期日 */
+            LocalDate earliestCertValidUntil,
+            /** true = 历史委托（从未挂过标准器），兼容旧流程放行 */
+            boolean legacyNoDevice,
+            /** 当前是否允许调整挂接清单（仅收样） */
+            boolean deviceEditable,
+            /** 当前不可推进/挂接的原因列表，空表示服务端校验通过；前端展示、按钮仍以服务端为准 */
+            List<String> blockReasons) {
+    }
+
+    /** 挂接标准器行：编号 / 证书有效期 / 状态 / 占用情况全部按服务端当前数据给出 */
+    public record DeviceLinkView(
+            Long linkId,
+            Long deviceId,
+            String deviceNo,
+            String name,
+            String model,
+            String traceOrg,
+            LocalDate certValidUntil,
+            /** 证书剩余天数，负数已过期，null 未登记 */
+            Integer remainDays,
+            boolean expired,
+            boolean expiring,
+            String status,
+            String statusName,
+            LocalDateTime attachedAt,
+            LocalDateTime releasedAt,
+            String releaseReason,
+            String releaseReasonName,
+            /** 是否被本委托占用（活动行） */
+            boolean active,
+            /** 被哪笔未完成委托占用（本委托活动行时为自身），null = 空闲 */
+            Long occupiedByOrderId,
+            String occupiedByOrderNo,
+            /** 以当前时间判定：该标准器能否挂接/放行，false 时 reason 给出具体原因 */
+            boolean selectable,
+            /** 不可选用/不可放行的具体原因，如「证书已于 2026-09-02 过期」 */
+            String reason) {
+    }
+
+    /** 挂接抽屉返回：委托当前清单 + 全部可选标准器（含占用冲突标注） */
+    public record OrderDevicesView(
+            Long orderId,
+            String orderNo,
+            String status,
+            String statusName,
+            boolean editable,
+            List<DeviceLinkView> active,
+            List<DeviceLinkView> released,
+            List<DeviceLinkView> candidates) {
     }
 
     /** 左侧待办队列里的单条 */
@@ -134,7 +190,13 @@ public final class Views {
             String instrumentName,
             String clientName,
             LocalDate receiveDate,
-            Integer daysWaiting) {
+            Integer daysWaiting,
+            /** 占用标准器数量 */
+            int deviceCount,
+            /** 最早证书到期日（列表徽标用） */
+            LocalDate earliestCertValidUntil,
+            /** 不可推进原因（标准器停用/过期/被改证等），非空时队列项打红点 */
+            List<String> blockReasons) {
     }
 
     /** 左侧待办队列：按流转状态分组 */
@@ -172,6 +234,10 @@ public final class Views {
             Integer remainDays,
             boolean expired,
             boolean expiring,
-            String remark) {
+            String remark,
+            /** 是否正被一笔未完成委托占用 */
+            boolean occupied,
+            /** 占用方委托单号，null = 空闲 */
+            String occupiedByOrderNo) {
     }
 }

@@ -242,6 +242,7 @@ body {
 .qdot-VERIFYING { background: #ef6c00; }
 .qdot-CERTIFYING { background: #00838f; }
 .qdot-ISSUED { background: #2e7d32; }
+.qdot-VOID { background: #9e9e9e; }
 
 .qcount {
   margin-left: auto;
@@ -275,6 +276,18 @@ body {
   background: var(--mt-primary-soft);
   border-left-color: var(--mt-primary);
   box-shadow: inset 0 0 0 1px var(--mt-primary-soft-2);
+}
+
+/* 标准器停用/过期/未挂导致不可推进：队列项红边提示，hover/title 点名具体原因 */
+.qitem.is-blocked {
+  border-left-color: #e53935;
+}
+
+.qitem-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
 }
 
 .qitem b {

@@ -38,7 +38,15 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="140" fixed="right">
+        <el-table-column label="占用情况" width="150">
+          <template #default="{ row }">
+            <el-tag v-if="row.occupied" size="small" type="danger" effect="plain">
+              {{ row.occupiedByOrderNo }} 占用中
+            </el-tag>
+            <span v-else class="muted">空闲</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="200" fixed="right">
           <template #default="{ row }">
             <el-button size="small" type="primary" link :disabled="row.status === 'TRACING'" @click="setStatus(row, 'TRACING')">
               送检溯源
@@ -46,6 +54,7 @@
             <el-button size="small" type="primary" link :disabled="row.status === 'STOPPED'" @click="setStatus(row, 'STOPPED')">
               停用
             </el-button>
+            <el-button size="small" type="primary" link @click="openEdit(row)">修订</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -68,6 +77,40 @@
       <template #footer>
         <el-button size="small" @click="showNew = false">取消</el-button>
         <el-button size="small" type="primary" @click="doCreate">登记</el-button>
+      </template>
+    </el-dialog>
+    <!-- 修订档案/证书：模拟证书被修订为更早到期 / 中途停用，占用它的委托下一次流转必被服务端拦下 -->
+    <el-dialog v-model="showEdit" title="修订标准器档案 / 溯源证书" width="520px">
+      <el-alert type="warning" :closable="false" show-icon style="margin-bottom: 12px"
+                title="若该标准器正被未完成委托占用，改证/停用后该委托在核验、出证、发放时会被阻止并点名，不能靠刷新绕过。" />
+      <el-form label-width="110px" size="small">
+        <el-form-item label="名称">
+          <el-input v-model="editForm.name" />
+        </el-form-item>
+        <el-form-item label="型号">
+          <el-input v-model="editForm.model" />
+        </el-form-item>
+        <el-form-item label="溯源机构">
+          <el-input v-model="editForm.traceOrg" />
+        </el-form-item>
+        <el-form-item label="证书有效期至">
+          <el-date-picker v-model="editForm.certValidUntil" type="date" value-format="YYYY-MM-DD"
+                          style="width: 100%" placeholder="留空可清空有效期" />
+        </el-form-item>
+        <el-form-item label="状态">
+          <el-select v-model="editForm.status" style="width: 100%">
+            <el-option label="在用" value="IN_USE" />
+            <el-option label="停用" value="STOPPED" />
+            <el-option label="送检" value="TRACING" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="editForm.remark" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button size="small" @click="showEdit = false">取消</el-button>
+        <el-button size="small" type="primary" @click="doUpdate">保存修订</el-button>
       </template>
     </el-dialog>
   </div>
@@ -116,6 +159,31 @@ async function doCreate() {
   showNew.value = false
   ElMessage.success('标准器已登记')
   await load()
+}
+
+// ---------------- 档案/证书修订（证书改早、中途停用） ----------------
+const showEdit = ref(false)
+const editId = ref(null)
+const editForm = reactive({
+  name: '', model: '', traceOrg: '', certValidUntil: '', status: 'IN_USE', remark: ''
+})
+
+function openEdit(row) {
+  editId.value = row.id
+  editForm.name = row.name
+  editForm.model = row.model || ''
+  editForm.traceOrg = row.traceOrg || ''
+  editForm.certValidUntil = row.certValidUntil || ''
+  editForm.status = row.status
+  editForm.remark = row.remark || ''
+  showEdit.value = true
+}
+
+async function doUpdate() {
+  await deviceApi.update(editId.value, { ...editForm })
+  showEdit.value = false
+  ElMessage.success('标准器档案已修订，占用它的委托将按新证书重新校验')
+  await Promise.all([load(), lab.refreshAll()])
 }
 
 onMounted(load)

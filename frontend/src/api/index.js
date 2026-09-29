@@ -62,12 +62,19 @@ export const orderApi = {
   create: (data) => http.post('/calibration-orders', data),
   result: (id, data) => http.post(`/calibration-orders/${id}/result`, data),
   advance: (id) => http.post(`/calibration-orders/${id}/advance`),
-  rollback: (id) => http.post(`/calibration-orders/${id}/rollback`)
+  rollback: (id) => http.post(`/calibration-orders/${id}/rollback`),
+  voidOrder: (id) => http.post(`/calibration-orders/${id}/void`),
+  /** 挂接抽屉：当前清单 + 候选标准器（含占用冲突） */
+  devices: (id) => http.get(`/calibration-orders/${id}/devices`),
+  /** 全量保存挂接清单（挂接/替换/解除），服务端事务判定占用与放行 */
+  saveDevices: (id, deviceIds) => http.put(`/calibration-orders/${id}/devices`, { deviceIds })
 }
 
 /** 模块五：标准器 */
 export const deviceApi = {
   list: () => http.get('/standard-devices'),
   create: (data) => http.post('/standard-devices', data),
-  setStatus: (id, status) => http.post(`/standard-devices/${id}/status`, { status })
+  setStatus: (id, status) => http.post(`/standard-devices/${id}/status`, { status }),
+  /** 修订档案/证书（如证书被修订为更早到期） */
+  update: (id, data) => http.put(`/standard-devices/${id}`, data)
 }

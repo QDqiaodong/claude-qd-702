@@ -88,13 +88,26 @@
             v-for="item in group.items"
             :key="item.id"
             class="qitem"
-            :class="{ 'is-on': item.id === orderId }"
+            :class="{ 'is-on': item.id === orderId, 'is-blocked': item.blockReasons && item.blockReasons.length }"
             type="button"
+            :title="(item.blockReasons || []).join('；')"
             @click="selectOrder(item.id)"
           >
             <b>{{ item.orderNo }}</b>
             <span>{{ item.instNo }} · {{ item.instrumentName }}</span>
             <em>{{ item.clientName }}<template v-if="item.daysWaiting !== null"> · 已 {{ item.daysWaiting }} 天</template></em>
+            <span class="qitem-tags">
+              <el-tag size="small" :type="item.deviceCount ? 'primary' : 'info'" effect="plain">
+                标准器 {{ item.deviceCount || 0 }}
+              </el-tag>
+              <el-tag v-if="item.earliestCertValidUntil" size="small"
+                      :type="earliestTagType(item)" effect="plain">
+                至 {{ item.earliestCertValidUntil }}
+              </el-tag>
+              <el-tag v-if="item.blockReasons && item.blockReasons.length" size="small" type="danger">
+                不可推进
+              </el-tag>
+            </span>
           </button>
           <div v-if="!group.items.length" class="qempty">暂无</div>
         </div>
@@ -180,6 +193,12 @@ async function loadQueue() {
 
 async function loadOverview() {
   overview.value = await orderApi.overview()
+}
+
+/** 最早证书到期日的徽标颜色：有不可推进原因一律红，60 天内黄，否则绿 */
+function earliestTagType(item) {
+  if (item.blockReasons && item.blockReasons.length) return 'danger'
+  return 'warning'
 }
 
 async function loadAll() {

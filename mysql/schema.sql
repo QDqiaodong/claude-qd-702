@@ -6,8 +6,9 @@
 --   1. lab_client             送检客户（结算方式、账期天数）
 --   2. lab_instrument         计量器具台账（器具编号 = 业务自然主键）
 --   3. lab_procedure          检定规程（单项收费）
---   4. lab_calibration_order  检定委托与流转单（收样→检定中→核验→出证→已发放）
+--   4. lab_calibration_order  检定委托与流转单（收样→检定中→核验→出证→已发放 / 作废）
 --   5. lab_standard_device    标准器（溯源单位、证书有效期倒计时）
+--   6. lab_order_device       委托-标准器挂接/占用关系（活动行 = 占用中；释放行 = 历史留痕）
 --
 -- 演示数据对照：
 --   [器具] 到期预警    → 下次到期日距今天不足 30 天：JLB-0004/0009/0015/0021
@@ -22,6 +23,7 @@
 SET NAMES utf8mb4;
 SET FOREIGN_KEY_CHECKS = 0;
 
+DROP TABLE IF EXISTS lab_order_device;
 DROP TABLE IF EXISTS lab_calibration_order;
 DROP TABLE IF EXISTS lab_instrument;
 DROP TABLE IF EXISTS lab_procedure;
@@ -99,10 +101,11 @@ CREATE TABLE lab_calibration_order (
     measured_data    VARCHAR(500)           COMMENT '实测数据项（; 分隔多条，| 分隔 校准点|标准值|示值|示值误差）',
     conclusion       VARCHAR(16)            COMMENT 'PASS 合格 / LIMITED 限用 / FAIL 不合格',
     cert_no          VARCHAR(48)            COMMENT '证书编号',
-    status           VARCHAR(20)   NOT NULL COMMENT 'RECEIVED 收样 / CALIBRATING 检定中 / VERIFYING 核验 / CERTIFYING 出证 / ISSUED 已发放',
+    status           VARCHAR(20)   NOT NULL COMMENT 'RECEIVED 收样 / CALIBRATING 检定中 / VERIFYING 核验 / CERTIFYING 出证 / ISSUED 已发放 / VOID 作废',
     cert_valid_until DATE                   COMMENT '证书有效期至',
     fee              DECIMAL(10,2)          COMMENT '本次收费（元）',
     remark           VARCHAR(200)           COMMENT '备注',
+    version          INT           NOT NULL DEFAULT 0 COMMENT '乐观锁版本号：并发提交只允许一笔改写委托状态',
     updated_at       DATETIME               COMMENT '更新时间',
     PRIMARY KEY (id),
     UNIQUE KEY uk_order_no (order_no),
@@ -127,6 +130,26 @@ CREATE TABLE lab_standard_device (
     UNIQUE KEY uk_device_no (device_no),
     KEY idx_device_valid (cert_valid_until)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='标准器';
+
+-- ---------------------------- 6. 委托-标准器挂接/占用关系 ----------------------------
+-- 活动行（released_at IS NULL）表示标准器正被该委托占用；released_at 有值表示已释放、仅作历史留痕。
+-- 一个委托挂同一标准器只允许一条活动行（uk_order_device_active）；
+-- 一台标准器全局只允许被一条活动行占用（uk_device_active）——并发抢占由数据库唯一索引兜底。
+-- active_flag 是基于 released_at 生成的 STORED 列：MySQL 唯一索引允许多个 NULL，不能直接用 released_at 做唯一键。
+CREATE TABLE lab_order_device (
+    id            BIGINT      NOT NULL AUTO_INCREMENT,
+    order_id      BIGINT      NOT NULL COMMENT '委托单 id',
+    device_id     BIGINT      NOT NULL COMMENT '标准器 id',
+    attached_at   DATETIME    NOT NULL COMMENT '挂接时间',
+    released_at   DATETIME             COMMENT '释放时间（回退到收样 / 作废 / 已发放后保留占用则置位）',
+    release_reason VARCHAR(24)          COMMENT 'REPLACE 清单替换 / ROLLBACK_RECEIVED 退回收样 / VOID 作废 / ISSUED 已发放留痕',
+    active_flag   TINYINT GENERATED ALWAYS AS (CASE WHEN released_at IS NULL THEN 1 ELSE NULL END) STORED COMMENT '活动行=1，释放行=NULL',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_order_device_active (order_id, device_id, active_flag),
+    UNIQUE KEY uk_device_active (device_id, active_flag),
+    KEY idx_order_device_order (order_id),
+    KEY idx_order_device_device (device_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='委托-标准器挂接与占用关系';
 
 
 -- ---------------------------- 送检客户 ----------------------------
@@ -262,5 +285,31 @@ INSERT INTO lab_standard_device (id, device_no, name, model, measure_range, trac
     (11, 'STD-0011', '恒温油槽',         'HWC-300',     '90-300℃',      '华中国家计量测试中心', '2026-04-11', '2028-04-11', 'IN_USE',  NULL),
     (12, 'STD-0012', '老式标准压力表',   'YB-150',      '0-25MPa',      '上海市计量测试技术研究院','2023-05-19','2025-05-19', 'STOPPED', '停用封存，待报废'),
     (13, 'STD-0013', '标准位移检定仪',   'SJY-50',      '0-50mm',       '中国计量科学研究院',   '2025-07-30', '2026-07-30', 'TRACING', '已打包送上级机构溯源');
+
+-- ---------------------------- 委托-标准器挂接/占用关系 ----------------------------
+-- 演示对照：
+--   [占用中] 委托 11 挂 STD-0005（证书 2026-09-02 已过期）→ 推进到「核验」必被服务端拦下
+--   [占用中] 委托 13 挂 STD-0013（送检中）→ 推进到「核验」必被拦下
+--   [占用中] 委托 8  挂 STD-0001 + STD-0002（STD-0002 临期未过期）→ 可推进
+--   [占用中] 委托 10 挂 STD-0002？否——STD-0002 已被委托 8 占用；委托 10 挂 STD-0011
+--   [占用中] 委托 5/6/7（出证）各挂有效标准器，证书未过期可继续流转
+--   [占用中] 收样委托 14 挂 STD-0006、16 挂 STD-0009（临期未过期，可挂但倒计时）→ 其他委托选择时可见占用冲突
+--   [已释放] 已发放委托 1/2/4 与退回收样委托 18 留下 released_at 历史行
+INSERT INTO lab_order_device (id, order_id, device_id, attached_at, released_at, release_reason) VALUES
+    (1,  11, 5,  '2026-09-23 08:40:00', NULL, NULL),
+    (2,  13, 13, '2026-09-23 13:45:00', NULL, NULL),
+    (3,  8,  1,  '2026-09-22 09:00:00', NULL, NULL),
+    (4,  8,  2,  '2026-09-22 09:00:00', NULL, NULL),
+    (5,  10, 11, '2026-09-23 14:10:00', NULL, NULL),
+    (6,  5,  3,  '2026-09-21 09:30:00', NULL, NULL),
+    (7,  6,  7,  '2026-09-20 09:10:00', NULL, NULL),
+    (8,  7,  10, '2026-09-19 09:05:00', NULL, NULL),
+    (9,  14, 6,  '2026-09-24 08:55:00', NULL, NULL),
+    (10, 16, 9,  '2026-09-24 09:15:00', NULL, NULL),
+    (11, 1,  3,  '2026-09-18 09:00:00', '2026-09-22 16:20:00', 'ISSUED'),
+    (12, 2,  3,  '2026-09-19 09:00:00', '2026-09-23 10:12:00', 'ISSUED'),
+    (13, 4,  6,  '2026-09-10 09:00:00', '2026-09-16 11:30:00', 'ISSUED'),
+    (14, 18, 4,  '2026-09-16 09:00:00', '2026-09-18 14:00:00', 'ROLLBACK_RECEIVED'),
+    (15, 18, 6,  '2026-09-16 09:00:00', '2026-09-20 15:35:00', 'ISSUED');
 
 SET FOREIGN_KEY_CHECKS = 1;

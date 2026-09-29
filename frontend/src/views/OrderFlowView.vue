@@ -16,9 +16,78 @@
         </el-step>
       </el-steps>
 
+      <!-- 标准器挂接与放行校验：编号 / 证书有效期 / 当前状态全部来自服务端当前数据 -->
+      <div class="device-box" v-if="order.id">
+        <div class="device-box-head">
+          <span class="device-box-title">标准器挂接（{{ order.deviceCount || 0 }} 件）</span>
+          <el-tag v-if="order.earliestCertValidUntil" size="small"
+                  :type="earliestTagType" effect="plain">
+            最早到期 {{ order.earliestCertValidUntil }}
+          </el-tag>
+          <span class="spacer"></span>
+          <el-button v-if="order.deviceEditable" size="small" type="primary" plain @click="openDeviceDrawer">
+            {{ order.deviceCount ? '调整清单' : '选择标准器' }}
+          </el-button>
+          <el-button v-else size="small" plain @click="openDeviceDrawer">查看</el-button>
+        </div>
+
+        <!-- 不可放行原因：停用 / 过期 / 改证 / 记录异常，服务端实时判定，刷新绕不过 -->
+        <el-alert v-for="(r, i) in order.blockReasons" :key="'b' + i" class="device-alert"
+                  :title="r" type="error" :closable="false" show-icon />
+        <el-alert v-if="order.status === 'VOID'" class="device-alert"
+                  title="委托已作废：标准器占用已释放，数据保留可查，不能再流转。"
+                  type="info" :closable="false" show-icon />
+
+        <div v-if="activeDevices.length" class="device-list">
+          <div v-for="d in activeDevices" :key="d.linkId" class="device-chip"
+               :class="{ 'is-bad': !d.selectable }">
+            <div class="device-chip-line">
+              <b class="mono">{{ d.deviceNo }}</b>
+              <span>{{ d.name }}</span>
+            </div>
+            <div class="device-chip-line device-chip-meta">
+              <el-tag size="small" :type="deviceStatusTagType(d.status)">{{ d.statusName }}</el-tag>
+              <el-tag size="small" :type="d.expired ? 'danger' : d.expiring ? 'warning' : 'success'">
+                证书至 {{ d.certValidUntil || '未登记' }}
+              </el-tag>
+            </div>
+            <div v-if="!d.selectable" class="device-chip-reason">⛔ {{ d.reason }}</div>
+          </div>
+        </div>
+        <div v-else-if="order.status !== 'VOID'" class="device-empty">
+          <template v-if="order.legacyNoDevice">历史委托未挂标准器，可按原流程完成</template>
+          <template v-else>挂接已释放（退回/作废），重新推进前需再次挂接</template>
+        </div>
+
+        <el-collapse v-if="releasedDevices.length" class="device-history">
+          <el-collapse-item :title="'历史挂接留痕（' + releasedDevices.length + '）'">
+            <div v-for="d in releasedDevices" :key="d.linkId" class="device-history-row">
+              <span class="mono">{{ d.deviceNo }}</span>
+              <span>{{ d.name }}</span>
+              <el-tag size="small" type="info" effect="plain">{{ d.releaseReasonName }}</el-tag>
+              <span class="muted">{{ d.releasedAt }}</span>
+            </div>
+          </el-collapse-item>
+        </el-collapse>
+
+        <div v-if="!order.deviceEditable && order.status !== 'ISSUED' && order.status !== 'VOID'"
+             class="device-lock-note">
+          🔒 已进入检定环节，使用过的标准器不能静默调整；如需更换请先回退到收样。
+        </div>
+      </div>
+
       <div class="flow-actions">
         <el-button type="primary" size="small" :disabled="!canRollback" @click="rollback">◂ 回退</el-button>
-        <el-button type="primary" size="small" :disabled="!canAdvance" @click="advance">推进 ▸</el-button>
+        <el-button type="primary" size="small" :disabled="!canAdvance" :loading="advancing" @click="advance">
+          推进 ▸
+        </el-button>
+        <el-popconfirm
+          title="作废后标准器占用将立即释放，委托不可再流转。确认作废？"
+          confirm-button-text="确认作废" cancel-button-text="取消" @confirm="voidOrder">
+          <template #reference>
+            <el-button size="small" type="danger" plain :disabled="!canVoid">作废</el-button>
+          </template>
+        </el-popconfirm>
       </div>
 
       <div class="flow-form">
@@ -101,7 +170,8 @@
           <span v-if="order.remark" class="cert-concl-note">（{{ order.remark }}）</span>
         </div>
 
-        <div class="cert-stamp" :class="{ 'is-none': order.status === 'RECEIVED' || order.status === 'CALIBRATING' }">
+        <div class="cert-stamp"
+             :class="{ 'is-none': order.status === 'RECEIVED' || order.status === 'CALIBRATING', 'is-void': order.status === 'VOID' }">
           <span class="cert-stamp-big">{{ stampText }}</span>
           <span class="cert-stamp-small">计量检定专用章</span>
         </div>
@@ -118,6 +188,74 @@
         </div>
       </div>
     </section>
+
+    <!-- 标准器挂接抽屉：批量选择，冲突/过期/停用行明确标注，服务端最终判定 -->
+    <el-drawer v-model="showDevices" size="560px"
+               :title="'标准器挂接 · ' + (devicesPanel.orderNo || '')">
+      <div v-loading="deviceLoading">
+        <el-alert v-if="!devicesPanel.editable" type="warning" :closable="false" show-icon
+                  title="当前环节不允许调整已使用的标准器，这里仅展示清单与候选状态。"
+                  style="margin-bottom: 10px" />
+        <div class="drawer-toolbar">
+          <el-input v-model="deviceKeyword" size="small" clearable placeholder="按编号 / 名称筛选"
+                    style="width: 220px" />
+          <el-select v-model="deviceStatusFilter" size="small" clearable placeholder="状态"
+                     style="width: 110px">
+            <el-option label="在用" value="IN_USE" />
+            <el-option label="停用" value="STOPPED" />
+            <el-option label="送检" value="TRACING" />
+          </el-select>
+          <span class="spacer"></span>
+          <el-button size="small" plain :disabled="!devicesPanel.editable" @click="selectAllAvailable">
+            全选可用
+          </el-button>
+          <span class="drawer-count">已选 {{ selectedDeviceIds.length }} 件</span>
+        </div>
+
+        <el-table ref="deviceTableRef" :data="filteredCandidates" size="small" border stripe
+                  row-key="deviceId" class="drawer-table"
+                  :row-class-name="candidateRowClass"
+                  @selection-change="onSelectionChange"
+                  @row-click="onRowClick">
+          <el-table-column v-if="devicesPanel.editable" type="selection" width="40"
+                           :selectable="canSelectCandidate" reserve-selection />
+          <el-table-column label="标准器" min-width="200">
+            <template #default="{ row }">
+              <b class="mono">{{ row.deviceNo }}</b>
+              <div>{{ row.name }}<span v-if="row.model" class="muted"> · {{ row.model }}</span></div>
+            </template>
+          </el-table-column>
+          <el-table-column label="状态" width="76">
+            <template #default="{ row }">
+              <el-tag size="small" :type="deviceStatusTagType(row.status)">{{ row.statusName }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="证书有效期" width="120">
+            <template #default="{ row }">
+              <el-tag size="small" :type="row.expired ? 'danger' : row.expiring ? 'warning' : 'success'">
+                {{ row.certValidUntil || '未登记' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="不可选用原因" min-width="180">
+            <template #default="{ row }">
+              <span v-if="!row.selectable" class="conflict-text">{{ row.reason }}</span>
+              <span v-else class="ok-text">可挂接</span>
+            </template>
+          </el-table-column>
+        </el-table>
+
+        <el-alert v-if="attachError" :title="attachError" type="error" :closable="false" show-icon
+                  class="drawer-alert" />
+      </div>
+      <template #footer>
+        <div class="drawer-footer">
+          <el-button size="small" @click="showDevices = false">关闭</el-button>
+          <el-button v-if="devicesPanel.editable" size="small" type="primary" :loading="deviceSaving"
+                     @click="saveDevices">保存挂接清单</el-button>
+        </div>
+      </template>
+    </el-drawer>
 
     <!-- 新建委托单 -->
     <el-dialog v-model="showNew" title="新建检定委托单（按器具编号受理）" width="520px">
@@ -154,12 +292,24 @@
 </template>
 
 <script setup>
-import { computed, inject, onMounted, reactive, ref, watch } from 'vue'
+import { computed, inject, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { instrumentApi, orderApi, procedureApi } from '../api'
 
 const lab = inject('lab')
 const order = computed(() => lab.currentOrder.value || {})
+
+const activeDevices = computed(() => order.value.devices || [])
+const releasedDevices = computed(() => order.value.releasedDevices || [])
+
+const earliestTagType = computed(() => {
+  const bad = activeDevices.value.some((d) => d.expired || d.expiring)
+  return bad ? 'danger' : 'success'
+})
+
+function deviceStatusTagType(status) {
+  return status === 'IN_USE' ? 'success' : status === 'TRACING' ? 'warning' : 'info'
+}
 
 const FLOW = [
   { key: 'RECEIVED', name: '收样' },
@@ -189,9 +339,17 @@ const activeStep = computed(() => {
   return order.value.stepIndex == null ? 0 : order.value.stepIndex
 })
 
-const canAdvance = computed(() => order.value.id != null && order.value.status !== 'ISSUED')
+const isVoid = computed(() => order.value.status === 'VOID')
+const isIssued = computed(() => order.value.status === 'ISSUED')
+const canAdvance = computed(() => order.value.id != null && !isIssued.value && !isVoid.value)
 const canRollback = computed(() =>
-  order.value.id != null && order.value.status !== 'RECEIVED' && order.value.status !== 'ISSUED')
+  order.value.id != null && order.value.status !== 'RECEIVED' && !isIssued.value && !isVoid.value)
+const canVoid = computed(() =>
+  order.value.id != null && !isIssued.value && !isVoid.value)
+
+// 推进按钮不禁用：让请求打到服务端做最终判定（前端禁用可以被绕过，不能当作闸门）；
+// 仅作废/已发放才真正禁用。loading 防止重复点击产生两次请求。
+const advancing = ref(false)
 
 const instruments = ref([])
 const procedures = ref([])
@@ -236,6 +394,7 @@ const conclusionClass = computed(() => ({
 }))
 
 const stampText = computed(() => {
+  if (order.value.status === 'VOID') return '已作废'
   if (order.value.status === 'RECEIVED' || order.value.status === 'CALIBRATING') return '未盖章'
   return conclusionText.value
 })
@@ -274,15 +433,121 @@ async function saveResult() {
 }
 
 async function advance() {
-  await orderApi.advance(order.value.id)
-  ElMessage.success('流转推进一格')
-  await lab.refreshAll()
+  if (advancing.value) return
+  advancing.value = true
+  try {
+    // 服务端在一个事务里重新按当前时间复核标准器状态/证书有效期，失败信息点名到具体标准器
+    await orderApi.advance(order.value.id)
+    ElMessage.success('流转推进一格')
+    await lab.refreshAll()
+  } finally {
+    advancing.value = false
+  }
 }
 
 async function rollback() {
   await orderApi.rollback(order.value.id)
   ElMessage.success('流转回退一格')
   await lab.refreshAll()
+}
+
+async function voidOrder() {
+  await orderApi.voidOrder(order.value.id)
+  ElMessage.success('委托已作废，标准器占用已释放')
+  await lab.refreshAll()
+}
+
+// ---------------- 标准器挂接抽屉 ----------------
+const showDevices = ref(false)
+const deviceLoading = ref(false)
+const deviceSaving = ref(false)
+const attachError = ref('')
+const deviceKeyword = ref('')
+const deviceStatusFilter = ref('')
+const deviceTableRef = ref(null)
+const devicesPanel = reactive({ orderNo: '', editable: false, candidates: [] })
+const selectedDeviceIds = ref([])
+
+const filteredCandidates = computed(() => {
+  const kw = deviceKeyword.value.trim().toLowerCase()
+  return devicesPanel.candidates.filter((row) => {
+    if (deviceStatusFilter.value && row.status !== deviceStatusFilter.value) return false
+    if (!kw) return true
+    return (row.deviceNo || '').toLowerCase().includes(kw) || (row.name || '').toLowerCase().includes(kw)
+  })
+})
+
+function canSelectCandidate(row) {
+  return devicesPanel.editable && row.selectable
+}
+
+function candidateRowClass({ row }) {
+  return row.selectable ? '' : 'candidate-disabled'
+}
+
+function onSelectionChange(rows) {
+  selectedDeviceIds.value = rows.map((r) => r.deviceId)
+}
+
+/** 点行：可选项切换勾选，冲突/过期行不允许选，只能看到原因 */
+function onRowClick(row) {
+  if (!devicesPanel.editable || !row.selectable) return
+  const table = deviceTableRef.value
+  if (!table) return
+  table.toggleRowSelection(row, undefined)
+}
+
+function selectAllAvailable() {
+  if (!devicesPanel.editable) return
+  const table = deviceTableRef.value
+  if (!table) return
+  filteredCandidates.value.forEach((row) => {
+    if (row.selectable) table.toggleRowSelection(row, true)
+  })
+}
+
+async function openDeviceDrawer() {
+  if (!order.value.id) return
+  showDevices.value = true
+  attachError.value = ''
+  deviceKeyword.value = ''
+  deviceStatusFilter.value = ''
+  deviceLoading.value = true
+  try {
+    const data = await orderApi.devices(order.value.id)
+    devicesPanel.orderNo = data.orderNo
+    devicesPanel.editable = data.editable
+    devicesPanel.candidates = data.candidates || []
+    await nextTick()
+    const table = deviceTableRef.value
+    if (table) {
+      table.clearSelection()
+      // 候选表包含全部标准器：已挂件预勾选；停用/过期件即便已挂也不可勾选，取消后保存即解除重选
+      devicesPanel.candidates.forEach((row) => {
+        if (row.active && row.selectable) table.toggleRowSelection(row, true)
+      })
+    }
+  } finally {
+    deviceLoading.value = false
+  }
+}
+
+async function saveDevices() {
+  if (deviceSaving.value) return
+  deviceSaving.value = true
+  attachError.value = ''
+  try {
+    // 全量提交勾选结果：勾选=挂接/保留，不勾=解除；冲突抢占与停用过期由服务端事务最终判定
+    await orderApi.saveDevices(order.value.id, selectedDeviceIds.value)
+    ElMessage.success('标准器挂接清单已保存')
+    showDevices.value = false
+    await lab.refreshAll()
+  } catch (e) {
+    // 失败不弹窗、保留当前选择与委托原数据，修正后可再次提交
+    attachError.value = e.message || '保存失败，请调整后重试'
+  } finally {
+    deviceSaving.value = false
+  }
 }
 
 const showNew = ref(false)
@@ -356,6 +621,122 @@ onMounted(loadOptions)
   font-weight: 600;
   color: var(--mt-primary);
   margin: 6px 0 10px;
+}
+
+/* ---------- 标准器挂接面板 ---------- */
+.device-box {
+  border: 1px solid var(--mt-border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 10px 0 4px;
+  background: #faf9ff;
+}
+
+.device-box-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.device-box-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--mt-primary);
+}
+
+.device-alert {
+  margin-bottom: 6px;
+}
+
+.device-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.device-chip {
+  border: 1px solid #d9d2ea;
+  border-radius: 5px;
+  padding: 5px 8px;
+  background: #fff;
+}
+
+.device-chip.is-bad {
+  border-color: #f5b7b7;
+  background: #fff5f5;
+}
+
+.device-chip-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.device-chip-meta {
+  margin-top: 3px;
+}
+
+.device-chip-reason {
+  margin-top: 3px;
+  font-size: 12px;
+  color: #c0392b;
+}
+
+.device-empty {
+  font-size: 12px;
+  color: var(--mt-text-sub);
+  padding: 4px 0;
+}
+
+.device-history {
+  margin-top: 4px;
+}
+
+.device-history-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  padding: 2px 0;
+}
+
+.device-lock-note {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #b7791f;
+}
+
+.drawer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.drawer-count {
+  font-size: 12px;
+  color: var(--mt-text-sub);
+}
+
+.drawer-table :deep(.candidate-disabled) {
+  background: #faf0f0;
+}
+
+.conflict-text {
+  color: #c0392b;
+  font-size: 12px;
+}
+
+.drawer-alert {
+  margin-top: 10px;
+}
+
+.drawer-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 /* ---------- A4 纸质证书预览卡片 ---------- */
@@ -546,6 +927,16 @@ onMounted(loadOptions)
 
 .cert-stamp.is-none::before {
   border-color: rgba(169, 163, 154, 0.6);
+}
+
+.cert-stamp.is-void {
+  border-color: #616161;
+  color: #616161;
+  opacity: 0.8;
+}
+
+.cert-stamp.is-void::before {
+  border-color: rgba(97, 97, 97, 0.55);
 }
 
 .cert-sign {
