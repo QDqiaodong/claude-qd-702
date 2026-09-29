@@ -1,11 +1,80 @@
 <template>
   <div class="split">
-    <!-- 左：竖向步骤指示器 + 流转动作 + 结论录入 -->
+    <!-- 左：标准器挂接 + 竖向步骤 + 流转动作 + 结论录入 -->
     <section class="split-left panel">
       <div class="panel-head">
         <span class="panel-title">检定流转</span>
         <span class="spacer"></span>
         <el-button size="small" type="primary" plain @click="openNew">＋ 新建委托单</el-button>
+      </div>
+
+      <!-- ============ 标准器挂接与放行 ============ -->
+      <div class="device-box">
+        <div class="device-box-head">
+          <span class="device-box-title">标准器挂接</span>
+          <el-tag size="small" :type="deviceTagType">{{ order.deviceCount || 0 }} 件</el-tag>
+          <span class="spacer"></span>
+          <el-button
+            v-if="order.devicesEditable"
+            size="small" type="primary" plain
+            @click="openDevicePicker"
+          >选择 / 替换</el-button>
+        </div>
+
+        <!-- 作废态提示 -->
+        <el-alert
+          v-if="order.status === 'VOIDED'"
+          type="info" :closable="false" show-icon
+          title="本委托已作废，标准器占用已释放；记录保留可查，不能再流转或修改。"
+          class="gate-alert"
+        />
+
+        <template v-else>
+          <!-- 当前挂接清单（状态与有效期实时取自标准器台账） -->
+          <div v-if="!order.devices || !order.devices.length" class="device-empty">
+            尚未挂接标准器
+            <span v-if="order.status === 'RECEIVED'" class="muted">· 收样环节可选</span>
+          </div>
+          <ul v-else class="device-list">
+            <li v-for="d in order.devices" :key="d.linkId" :class="{ 'is-bad': !d.usable }">
+              <div class="device-line">
+                <b class="mono">{{ d.deviceNo }}</b>
+                <span>{{ d.name }}</span>
+                <span class="spacer"></span>
+                <el-tag size="small" :type="deviceStatusTag(d)">{{ d.statusName }}</el-tag>
+              </div>
+              <div class="device-line sub">
+                <span>证书有效期至 {{ d.certValidUntil || '未登记' }}</span>
+                <span class="spacer"></span>
+                <el-tag v-if="d.expired" size="small" type="danger">已过期 {{ Math.abs(d.remainDays) }} 天</el-tag>
+                <el-tag v-else-if="d.expiring" size="small" type="warning">剩 {{ d.remainDays }} 天</el-tag>
+                <el-tag v-else-if="d.remainDays !== null" size="small" type="success">剩 {{ d.remainDays }} 天</el-tag>
+              </div>
+              <div v-for="(iss, i) in d.issues" :key="i" class="device-issue">⛔ {{ iss }}</div>
+            </li>
+          </ul>
+
+          <!-- 进入检定中后只读说明：不能静默换已使用的标准器 -->
+          <div v-if="!order.devicesEditable && (!order.status || order.status !== 'ISSUED')" class="device-lock-note">
+            🔒 已进入检定环节，已使用的标准器不能静默修改；如需更换，请先回退到收样（占用释放）后重新选择。
+          </div>
+
+          <!-- 已释放留痕 -->
+          <el-collapse v-if="order.deviceHistory && order.deviceHistory.length" class="history-collapse">
+            <el-collapse-item name="h">
+              <template #title>
+                <span class="muted">挂接变更记录（{{ order.deviceHistory.length }}）</span>
+              </template>
+              <div v-for="(h, i) in order.deviceHistory" :key="i" class="history-row">
+                <span class="mono">{{ h.deviceNo }}</span>
+                <span>{{ h.name }}</span>
+                <el-tag size="small" effect="plain" type="info">{{ h.releasedReasonName }}</el-tag>
+                <span class="spacer"></span>
+                <span class="muted">{{ h.releasedAt }}</span>
+              </div>
+            </el-collapse-item>
+          </el-collapse>
+        </template>
       </div>
 
       <el-steps direction="vertical" :active="activeStep" finish-status="success" class="flow-steps">
@@ -16,12 +85,34 @@
         </el-step>
       </el-steps>
 
+      <!-- 服务端判定的不可放行原因（推进失败后驻留，刷新/重复点击均无法绕过） -->
+      <el-alert
+        v-if="gateError"
+        type="error" :closable="false" show-icon
+        title="不可推进" class="gate-alert"
+      >
+        <div class="gate-error-msg">{{ gateError }}</div>
+      </el-alert>
+      <el-alert
+        v-else-if="order.deviceBlocked && order.status !== 'ISSUED'"
+        type="error" :closable="false" show-icon
+        title="标准器当前不满足放行条件" class="gate-alert"
+      >
+        <div v-for="(r, i) in order.blockReasons" :key="i" class="gate-error-msg">⛔ {{ r }}</div>
+        <div class="gate-error-tip">请处理（停用/送检设备回用、解除后改挂合格标准器）后再推进。</div>
+      </el-alert>
+
       <div class="flow-actions">
         <el-button type="primary" size="small" :disabled="!canRollback" @click="rollback">◂ 回退</el-button>
         <el-button type="primary" size="small" :disabled="!canAdvance" @click="advance">推进 ▸</el-button>
+        <el-button
+          v-if="canVoid"
+          type="danger" plain size="small"
+          @click="voidOrder"
+        >作废</el-button>
       </div>
 
-      <div class="flow-form">
+      <div v-if="order.status !== 'VOIDED'" class="flow-form">
         <div class="flow-form-title">结论与证书信息</div>
         <el-form label-width="72px" size="small">
           <el-form-item label="实测数据">
@@ -75,10 +166,21 @@
             <tr><th>制造厂</th><td>{{ order.manufacturer || '—' }}</td><th>出厂编号</th><td>{{ order.factoryNo || '—' }}</td></tr>
             <tr><th>测量范围</th><td>{{ order.measureRange || '—' }}</td><th>准确度等级</th><td>{{ order.accuracyGrade || '—' }}</td></tr>
             <tr><th>检定依据</th><td colspan="3">{{ procedureText }}</td></tr>
+            <tr>
+              <th>标准器</th>
+              <td colspan="3">
+                <template v-if="order.devices && order.devices.length">
+                  <span v-for="(d, i) in order.devices" :key="d.linkId" :class="{ 'danger-text': !d.usable }">
+                    {{ d.deviceNo }} {{ d.name }}<template v-if="i < order.devices.length - 1">；</template>
+                  </span>
+                </template>
+                <span v-else class="muted">未挂接</span>
+              </td>
+            </tr>
           </tbody>
         </table>
 
-        <div class="cert-subtitle">检定结果（标准器 • 环境条件：{{ envText }}）</div>
+        <div class="cert-subtitle">检定结果（环境条件：{{ envText }}）</div>
         <table class="cert-data">
           <thead>
             <tr><th>校准点</th><th>标准值</th><th>示值</th><th>示值误差</th></tr>
@@ -101,9 +203,9 @@
           <span v-if="order.remark" class="cert-concl-note">（{{ order.remark }}）</span>
         </div>
 
-        <div class="cert-stamp" :class="{ 'is-none': order.status === 'RECEIVED' || order.status === 'CALIBRATING' }">
+        <div class="cert-stamp" :class="{ 'is-none': stampFaded, 'is-void': order.status === 'VOIDED' }">
           <span class="cert-stamp-big">{{ stampText }}</span>
-          <span class="cert-stamp-small">计量检定专用章</span>
+          <span class="cert-stamp-small">{{ order.status === 'VOIDED' ? '作废' : '计量检定专用章' }}</span>
         </div>
 
         <div class="cert-sign">
@@ -118,6 +220,73 @@
         </div>
       </div>
     </section>
+
+    <!-- ============ 标准器批量选择 / 替换（仅收样态） ============ -->
+    <el-dialog v-model="pickerVisible" title="选择参与本次检定的标准器" width="760px" @closed="onPickerClosed">
+      <div class="picker-tip muted">
+        可批量勾选；被其他未完成委托占用的标准器不可抢占（灰色）；停用、送检或证书过期的标准器可挂但会被放行校验拦下。
+        最终占用以服务端判定为准。
+      </div>
+
+      <el-alert
+        v-if="pickerConflicts.length"
+        type="error" :closable="false" show-icon
+        title="以下标准器被占用，本委托不能抢占；您原来选择的其他标准器仍保留，请改选后重新提交"
+        class="gate-alert"
+      >
+        <div v-for="(c, i) in pickerConflicts" :key="i" class="gate-error-msg">⛔ {{ c }}</div>
+      </el-alert>
+
+      <el-table
+        ref="pickerTableRef"
+        :data="deviceOptions"
+        size="small" border stripe height="380"
+        row-key="id"
+        @selection-change="onSelectionChange"
+        :row-class-name="pickerRowClass"
+      >
+        <el-table-column type="selection" width="46" :selectable="canSelect" reserve-selection />
+        <el-table-column prop="deviceNo" label="编号" width="104">
+          <template #default="{ row }"><span class="mono">{{ row.deviceNo }}</span></template>
+        </el-table-column>
+        <el-table-column prop="name" label="名称" min-width="150" show-overflow-tooltip />
+        <el-table-column prop="model" label="型号" width="120" />
+        <el-table-column label="证书有效期至" width="118">
+          <template #default="{ row }">{{ row.certValidUntil || '未登记' }}</template>
+        </el-table-column>
+        <el-table-column label="剩余" width="104">
+          <template #default="{ row }">
+            <el-tag v-if="row.expired" size="small" type="danger">过期</el-tag>
+            <el-tag v-else-if="row.expiring" size="small" type="warning">{{ row.remainDays }} 天</el-tag>
+            <el-tag v-else-if="row.remainDays !== null" size="small" type="success">{{ row.remainDays }} 天</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="状态" width="82">
+          <template #default="{ row }">
+            <el-tag size="small" :type="row.status === 'IN_USE' ? 'success' : row.status === 'TRACING' ? 'warning' : 'info'">
+              {{ row.statusName }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="占用/说明" min-width="170">
+          <template #default="{ row }">
+            <el-tag v-if="row.busy" size="small" type="danger" disable-transitions>
+              {{ row.busyOrderNo }} 占用
+            </el-tag>
+            <span v-else-if="row.issue" class="danger-text">{{ row.issue }}</span>
+            <el-tag v-else size="small" type="success">可选用</el-tag>
+          </template>
+        </el-table-column>
+      </el-table>
+
+      <template #footer>
+        <span class="muted picker-count">已选 {{ pickedIds.length }} 件</span>
+        <el-button size="small" @click="pickerVisible = false">取消</el-button>
+        <el-button size="small" type="primary" :loading="savingDevices" @click="submitDevices">
+          保存挂接清单
+        </el-button>
+      </template>
+    </el-dialog>
 
     <!-- 新建委托单 -->
     <el-dialog v-model="showNew" title="新建检定委托单（按器具编号受理）" width="520px">
@@ -154,8 +323,8 @@
 </template>
 
 <script setup>
-import { computed, inject, onMounted, reactive, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { computed, inject, onMounted, reactive, ref, watch, nextTick } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { instrumentApi, orderApi, procedureApi } from '../api'
 
 const lab = inject('lab')
@@ -179,6 +348,7 @@ const flowSteps = computed(() => {
 
 function stepDesc(key, index, i) {
   if (order.value.id == null) return '—'
+  if (order.value.status === 'VOIDED') return '已作废'
   if (i < index) return '已完成 · ' + (i === 0 ? (order.value.receiveDate || '已收样') : '流转留痕')
   if (i === index) return '当前环节 · 待处理'
   return '待流转'
@@ -186,12 +356,28 @@ function stepDesc(key, index, i) {
 
 const activeStep = computed(() => {
   if (order.value.id == null) return -1
+  if (order.value.status === 'VOIDED') return -1
   return order.value.stepIndex == null ? 0 : order.value.stepIndex
 })
 
-const canAdvance = computed(() => order.value.id != null && order.value.status !== 'ISSUED')
+const canAdvance = computed(() =>
+  order.value.id != null && order.value.status !== 'ISSUED' && order.value.status !== 'VOIDED')
 const canRollback = computed(() =>
-  order.value.id != null && order.value.status !== 'RECEIVED' && order.value.status !== 'ISSUED')
+  order.value.id != null && order.value.status !== 'RECEIVED'
+  && order.value.status !== 'ISSUED' && order.value.status !== 'VOIDED')
+const canVoid = computed(() =>
+  order.value.id != null && order.value.status !== 'ISSUED' && order.value.status !== 'VOIDED')
+
+const deviceTagType = computed(() => {
+  if (!order.value.deviceCount) return 'info'
+  return order.value.deviceBlocked ? 'danger' : 'success'
+})
+
+function deviceStatusTag(d) {
+  if (d.status === 'IN_USE') return 'success'
+  if (d.status === 'TRACING') return 'warning'
+  return 'info'
+}
 
 const instruments = ref([])
 const procedures = ref([])
@@ -235,8 +421,11 @@ const conclusionClass = computed(() => ({
   'danger-text': order.value.conclusion === 'FAIL'
 }))
 
+const stampFaded = computed(() =>
+  order.value.status === 'RECEIVED' || order.value.status === 'CALIBRATING')
 const stampText = computed(() => {
-  if (order.value.status === 'RECEIVED' || order.value.status === 'CALIBRATING') return '未盖章'
+  if (order.value.status === 'VOIDED') return '作 废'
+  if (stampFaded.value) return '未盖章'
   return conclusionText.value
 })
 
@@ -255,6 +444,8 @@ watch(
     form.certNo = val && val.certNo ? val.certNo : ''
     form.verifier = val && val.verifier ? val.verifier : ''
     form.checker = val && val.checker ? val.checker : ''
+    // 切换委托后清掉上一笔的推进报错（新一笔的状态以详情接口实时结果为准）
+    gateError.value = ''
   },
   { immediate: true }
 )
@@ -273,16 +464,114 @@ async function saveResult() {
   await lab.refreshAll()
 }
 
+/** 推进失败信息驻留页面：只以服务端最新判定为准，任何前端操作都改不掉它 */
+const gateError = ref('')
+const advancing = ref(false)
+
 async function advance() {
-  await orderApi.advance(order.value.id)
-  ElMessage.success('流转推进一格')
-  await lab.refreshAll()
+  if (advancing.value) return // 防重复点击
+  advancing.value = true
+  gateError.value = ''
+  try {
+    await orderApi.advance(order.value.id)
+    ElMessage.success('流转推进一格')
+    await lab.refreshAll()
+  } catch (e) {
+    // 服务端点名哪件标准器导致失败；重新拉详情，让页面状态与后端完全一致
+    gateError.value = e.message || '服务端放行校验未通过'
+    await lab.refreshAll()
+  } finally {
+    advancing.value = false
+  }
 }
 
 async function rollback() {
   await orderApi.rollback(order.value.id)
   ElMessage.success('流转回退一格')
+  gateError.value = ''
   await lab.refreshAll()
+}
+
+async function voidOrder() {
+  try {
+    await ElMessageBox.confirm(
+      '作废后委托不可再流转，已挂标准器将立即释放，记录保留可查。确认作废？',
+      '委托作废确认', { type: 'warning', confirmButtonText: '确认作废', cancelButtonText: '取消' })
+  } catch {
+    return
+  }
+  await orderApi.void(order.value.id)
+  ElMessage.success('委托已作废，标准器占用已释放')
+  gateError.value = ''
+  await lab.refreshAll()
+}
+
+// ================= 标准器选择 / 批量挂接 / 替换 / 解除 =================
+const pickerVisible = ref(false)
+const deviceOptions = ref([])
+const pickedIds = ref([])
+const pickerConflicts = ref([])
+const savingDevices = ref(false)
+const pickerTableRef = ref(null)
+
+async function openDevicePicker() {
+  if (!order.value.id) return
+  pickerConflicts.value = []
+  deviceOptions.value = await orderApi.deviceOptions(order.value.id)
+  pickerVisible.value = true
+  await nextTick()
+  // 回显当前已挂接（占用中）的标准器
+  pickedIds.value = deviceOptions.value.filter((d) => d.selected).map((d) => d.id)
+  deviceOptions.value.forEach((row) => {
+    if (row.selected) pickerTableRef.value?.toggleRowSelection(row, true)
+  })
+}
+
+function onSelectionChange(rows) {
+  pickedIds.value = rows.map((r) => r.id)
+}
+
+/** 被别的委托占用的行禁选（不可抢占）；本笔已选/失效设备仍允许勾选调整 */
+function canSelect(row) {
+  return !row.busy
+}
+
+function pickerRowClass({ row }) {
+  return row.busy ? 'row-busy' : ''
+}
+
+async function submitDevices() {
+  if (savingDevices.value) return
+  savingDevices.value = true
+  try {
+    await orderApi.saveDevices(order.value.id, pickedIds.value)
+    ElMessage.success('标准器挂接清单已保存')
+    pickerConflicts.value = []
+    pickerVisible.value = false
+    gateError.value = ''
+    await lab.refreshAll()
+  } catch (e) {
+    // 并发抢占失败：服务端整单回滚，原委托数据与原挂接不变；冲突逐件驻留供改选
+    pickerConflicts.value = e.conflicts && e.conflicts.length ? e.conflicts : [e.message || '保存失败']
+    // 刷新候选项的占用方，但保留用户当前勾选（失败的一方可重新选择）
+    const fresh = await orderApi.deviceOptions(order.value.id)
+    const stillPicked = new Set(pickedIds.value)
+    deviceOptions.value = fresh
+    await nextTick()
+    deviceOptions.value.forEach((row) => {
+      if (stillPicked.has(row.id) && !row.busy) {
+        pickerTableRef.value?.toggleRowSelection(row, true)
+      }
+    })
+  } finally {
+    savingDevices.value = false
+  }
+}
+
+function onPickerClosed() {
+  pickerConflicts.value = []
+  pickedIds.value = []
+  pickerTableRef.value?.clearSelection()
 }
 
 const showNew = ref(false)
@@ -335,6 +624,113 @@ onMounted(loadOptions)
 </script>
 
 <style scoped>
+/* ---------- 标准器挂接区 ---------- */
+.device-box {
+  border: 1px solid var(--mt-border);
+  border-radius: 8px;
+  padding: 10px;
+  margin-bottom: 12px;
+  background: #fbfaff;
+}
+
+.device-box-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.device-box-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--mt-primary);
+}
+
+.device-empty {
+  font-size: 12px;
+  color: var(--mt-text-sub);
+  padding: 6px 2px;
+}
+
+.device-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.device-list li {
+  border: 1px solid var(--mt-border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: #fff;
+}
+
+.device-list li.is-bad {
+  border-color: #e6a0a0;
+  background: #fdf3f3;
+}
+
+.device-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.device-line.sub {
+  color: var(--mt-text-sub);
+  margin-top: 3px;
+}
+
+.device-line .spacer,
+.history-row .spacer {
+  flex: 1;
+}
+
+.device-issue {
+  font-size: 12px;
+  color: var(--mt-danger);
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
+.device-lock-note {
+  font-size: 11px;
+  color: var(--mt-warn);
+  margin-top: 8px;
+  line-height: 1.5;
+}
+
+.history-collapse {
+  margin-top: 6px;
+}
+
+.history-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  padding: 3px 0;
+}
+
+.gate-alert {
+  margin: 8px 0;
+}
+
+.gate-error-msg {
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.gate-error-tip {
+  font-size: 12px;
+  margin-top: 4px;
+  opacity: 0.85;
+}
+
 .flow-steps {
   padding: 4px 0;
 }
@@ -356,6 +752,22 @@ onMounted(loadOptions)
   font-weight: 600;
   color: var(--mt-primary);
   margin: 6px 0 10px;
+}
+
+/* ---------- 标准器选择弹窗 ---------- */
+.picker-tip {
+  font-size: 12px;
+  margin-bottom: 8px;
+  line-height: 1.5;
+}
+
+.picker-count {
+  margin-right: 12px;
+}
+
+:deep(.row-busy) {
+  background: #f6f6f8 !important;
+  color: var(--mt-text-sub);
 }
 
 /* ---------- A4 纸质证书预览卡片 ---------- */
@@ -546,6 +958,17 @@ onMounted(loadOptions)
 
 .cert-stamp.is-none::before {
   border-color: rgba(169, 163, 154, 0.6);
+}
+
+/* 作废章：黑色方形感（沿用圆形但换灰黑色） */
+.cert-stamp.is-void {
+  border-color: #303030;
+  color: #303030;
+  opacity: 0.8;
+}
+
+.cert-stamp.is-void::before {
+  border-color: rgba(48, 48, 48, 0.5);
 }
 
 .cert-sign {

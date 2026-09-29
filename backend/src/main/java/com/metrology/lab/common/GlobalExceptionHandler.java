@@ -11,8 +11,19 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
+import com.metrology.lab.service.OrderDeviceService.DeviceConflictException;
+
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    /**
+     * 标准器占用冲突：409 + 逐条冲突（前端保留原清单、逐件标红后可改选重提）
+     */
+    @ExceptionHandler(DeviceConflictException.class)
+    public ResponseEntity<ApiResponse<Void>> handleConflict(DeviceConflictException e) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(ApiResponse.conflict(e.getMessage(), e.getConflicts(), e.getBusyOrderNos()));
+    }
 
     /**
      * 业务校验失败：400 + 中文业务提示

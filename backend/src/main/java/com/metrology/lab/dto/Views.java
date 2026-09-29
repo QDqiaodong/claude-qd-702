@@ -118,12 +118,86 @@ public final class Views {
             String certNo,
             String status,
             String statusName,
-            /** 流转序号：0 收样 … 4 已发放 */
+            /** 流转序号：0 收样 … 4 已发放；作废返回 -1 */
             Integer stepIndex,
             LocalDate certValidUntil,
             BigDecimal fee,
             String remark,
-            LocalDateTime updatedAt) {
+            LocalDateTime updatedAt,
+            /** 当前挂接（占用中）的标准器数量 */
+            Integer deviceCount,
+            /** 当前挂接标准器中最早的证书到期日（列表徽标用） */
+            LocalDate earliestDeviceValidUntil,
+            /** 按当前时间实时判定：存在不可放行的标准器（停用/送检/过期/记录异常） */
+            boolean deviceBlocked,
+            /** 不可放行的逐条原因（点名到具体标准器） */
+            List<String> blockReasons,
+            /** 是否允许调整挂接清单：仅收样态可改 */
+            boolean devicesEditable,
+            /** 详情：当前挂接标准器的实时状态（列表接口为空，仅详情返回） */
+            List<OrderDeviceView> devices,
+            /** 详情：已释放的挂接历史留痕（解除/替换/回退/作废/发放） */
+            List<DeviceLinkHistoryView> deviceHistory) {
+    }
+
+    /** 委托上当前挂接的标准器（状态/有效期按查询当下实时计算） */
+    public record OrderDeviceView(
+            Long linkId,
+            Long deviceId,
+            String deviceNo,
+            String name,
+            String model,
+            /** 标准器当前证书有效期至（实时，不是快照） */
+            LocalDate certValidUntil,
+            /** 挂接当时的证书有效期至快照 */
+            LocalDate certValidSnapshot,
+            String status,
+            String statusName,
+            /** 证书剩余天数，负数表示已过期 */
+            Integer remainDays,
+            boolean expired,
+            boolean expiring,
+            /** 在用且证书未过期，参与本次检定放行无问题 */
+            boolean usable,
+            /** 不可放行原因（点名），usable=true 时为空 */
+            List<String> issues) {
+    }
+
+    /** 已释放的挂接历史 */
+    public record DeviceLinkHistoryView(
+            Long deviceId,
+            String deviceNo,
+            String name,
+            LocalDateTime linkedAt,
+            LocalDate certValidSnapshot,
+            LocalDateTime releasedAt,
+            String releasedReason,
+            String releasedReasonName) {
+    }
+
+    /** 挂接选择器中的候选标准器（带实时占用冲突与可用判定） */
+    public record DeviceOptionView(
+            Long id,
+            String deviceNo,
+            String name,
+            String model,
+            String measureRange,
+            LocalDate certValidUntil,
+            String status,
+            String statusName,
+            Integer remainDays,
+            boolean expired,
+            boolean expiring,
+            /** 在用且证书有效（仍允许挂接，但挂后会被放行校验拦住的设备不置灰） */
+            boolean usable,
+            /** 已被本笔委托选中 */
+            boolean selected,
+            /** 被其他未完成委托占用（不可抢占，选择器置灰） */
+            boolean busy,
+            Long busyOrderId,
+            String busyOrderNo,
+            /** 不可用/占用的一句话说明 */
+            String issue) {
     }
 
     /** 左侧待办队列里的单条 */
@@ -134,7 +208,13 @@ public final class Views {
             String instrumentName,
             String clientName,
             LocalDate receiveDate,
-            Integer daysWaiting) {
+            Integer daysWaiting,
+            /** 标准器挂接数量 */
+            Integer deviceCount,
+            /** 最早证书到期日 */
+            LocalDate earliestDeviceValidUntil,
+            /** 当前存在不可放行的标准器 */
+            boolean deviceBlocked) {
     }
 
     /** 左侧待办队列：按流转状态分组 */
@@ -172,6 +252,11 @@ public final class Views {
             Integer remainDays,
             boolean expired,
             boolean expiring,
+            /** 当前是否被未完成委托占用 */
+            boolean busy,
+            /** 占用方委托单号（空 = 未占用） */
+            String busyOrderNo,
+            /** 证书可修订（录入新的有效期），停用/溯源回来后可重新放行 */
             String remark) {
     }
 }

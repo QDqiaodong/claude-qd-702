@@ -43,4 +43,11 @@ public class StandardDeviceController {
                                                    @RequestBody @Valid StandardDeviceDtos.StatusReq req) {
         return ApiResponse.success("标准器状态已更新", deviceService.setStatus(id, req.getStatus()));
     }
+
+    /** 修订溯源证书（有效期可改早；进行中委托的下次放行按新日期实时校验） */
+    @PostMapping("/{id}/trace")
+    public ApiResponse<Views.DeviceView> reviseTrace(@PathVariable Long id,
+                                                     @RequestBody StandardDeviceDtos.TraceReviseReq req) {
+        return ApiResponse.success("溯源证书信息已修订", deviceService.reviseTrace(id, req));
+    }
 }

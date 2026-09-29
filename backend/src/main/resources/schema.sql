@@ -2,26 +2,31 @@
 -- 计量检定所业务系统 · 建表 + 种子数据
 -- 库名 metrology_lab，由 mysql 镜像的 docker-entrypoint 在【镜像构建期】执行一次。
 --
--- 五个业务模块：
+-- 六个业务模块：
 --   1. lab_client             送检客户（结算方式、账期天数）
 --   2. lab_instrument         计量器具台账（器具编号 = 业务自然主键）
 --   3. lab_procedure          检定规程（单项收费）
---   4. lab_calibration_order  检定委托与流转单（收样→检定中→核验→出证→已发放）
+--   4. lab_calibration_order  检定委托与流转单（收样→检定中→核验→出证→已发放，另可作废 VOIDED）
 --   5. lab_standard_device    标准器（溯源单位、证书有效期倒计时）
+--   6. lab_order_device       委托-标准器挂接与占用关系（released_at 为空 = 占用中，生成列唯一键防并发抢占）
 --
 -- 演示数据对照：
 --   [器具] 到期预警    → 下次到期日距今天不足 30 天：JLB-0004/0009/0015/0021
 --   [器具] 已超期      → JLB-0007（2026-09-12）、JLB-0018（2026-09-20）
 --   [器具] 状态齐活    → IN_USE / STOPPED / IN_CALIBRATION / SCRAPPED 各若干
---   [委托] 五态齐活    → RECEIVED 3 / CALIBRATING 4 / VERIFYING 3 / CERTIFYING 3 / ISSUED 4
+--   [委托] 五态齐活    → RECEIVED 3 / CALIBRATING 4 / VERIFYING 3 / CERTIFYING 3 / ISSUED 4，另含 1 笔 VOIDED
 --   [结论] 三种        → PASS 合格 / LIMITED 限用 / FAIL 不合格
 --   [实测] 数据项      → measured_data 用 ";" 分隔多条，每条 "|" 分隔：校准点|标准值|示值|示值误差
 --   [标准器] 倒计时    → STD-0005 已过期、STD-0002/0009 不足 60 天
+--   [挂接] 占用/异常   → 11 号委托挂 STD-0005（过期）推进必拦；12 号挂 STD-0013（送检中）；
+--                        8 号占用 STD-0002；16 号收样想挂 STD-0002 会冲突；19 号作废已释放；
+--                        14 号无挂接（历史兼容，可正常推进）；13 号带一条「已替换」留痕行。
 -- ============================================================================
 
 SET NAMES utf8mb4;
 SET FOREIGN_KEY_CHECKS = 0;
 
+DROP TABLE IF EXISTS lab_order_device;
 DROP TABLE IF EXISTS lab_calibration_order;
 DROP TABLE IF EXISTS lab_instrument;
 DROP TABLE IF EXISTS lab_procedure;
@@ -127,6 +132,29 @@ CREATE TABLE lab_standard_device (
     UNIQUE KEY uk_device_no (device_no),
     KEY idx_device_valid (cert_valid_until)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='标准器';
+
+-- ---------------------------- 6. 委托-标准器挂接与占用 ----------------------------
+-- 一行 = 某次把标准器挂接到委托的事实；released_at 为空表示该标准器当前仍被本笔委托占用。
+-- active_flag 是 MySQL 生成列（占用中=设备id，已释放=NULL），配合唯一键实现
+-- 「同一标准器全局至多一条占用中行」——两名检定员并发提交时，数据库只可能放行一笔。
+-- released_reason：DETACHED 收样态解除 / REPLACED 收样态替换 / ROLLBACK_RECEIVED 检定中退回收样 /
+--                  VOIDED 委托作废 / ISSUED 最终发放（留痕，历史记录不删）。
+CREATE TABLE lab_order_device (
+    id                BIGINT      NOT NULL AUTO_INCREMENT,
+    order_id          BIGINT      NOT NULL COMMENT '委托单 id',
+    device_id         BIGINT      NOT NULL COMMENT '标准器 id',
+    linked_at         DATETIME    NOT NULL COMMENT '挂接时间',
+    cert_valid_snapshot DATE               COMMENT '挂接时证书有效期至快照（审计用）',
+    released_at       DATETIME             COMMENT '释放时间，NULL = 占用中',
+    released_reason   VARCHAR(24)           COMMENT '释放原因',
+    active_flag       BIGINT GENERATED ALWAYS AS (CASE WHEN released_at IS NULL THEN device_id ELSE NULL END) VIRTUAL
+                          COMMENT '占用中=设备id，已释放=NULL（生成列，仅占用行参与唯一约束）',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_active_device (active_flag),
+    UNIQUE KEY uk_active_order_device (order_id, active_flag),
+    KEY idx_od_order (order_id, released_at),
+    KEY idx_od_device (device_id, released_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='委托-标准器挂接与占用关系';
 
 
 -- ---------------------------- 送检客户 ----------------------------
@@ -244,7 +272,9 @@ INSERT INTO lab_calibration_order (id, order_no, client_id, instrument_id, inst_
      'RECEIVED', NULL, 420.00, '硬度块配套一并送来', '2026-09-24 09:30:00'),
     (18, 'WT2026-0018', 2,  5,  'JLB-0005', 4,  '2026-09-16', '赵砚青', '孙敬之',
      '2mm|+2.000mm|+2.006mm|+0.006mm;6mm|+6.000mm|+6.011mm|+0.011mm;10mm|+10.000mm|+10.019mm|+0.019mm',
-     'FAIL', 'CERT-2026-0169', 'ISSUED', '2027-09-16', 90.00, '示值超差，判定不合格并出具结果通知书', '2026-09-20 15:35:00');
+     'FAIL', 'CERT-2026-0169', 'ISSUED', '2027-09-16', 90.00, '示值超差，判定不合格并出具结果通知书', '2026-09-20 15:35:00'),
+    (19, 'WT2026-0019', 4,  17, 'JLB-0017', 15, '2026-09-24', '周慕言', '待分配', NULL, NULL, NULL,
+     'VOIDED', NULL, 140.00, '客户撤单，委托作废；已挂标准器随作废一并释放', '2026-09-25 10:20:00');
 
 -- ---------------------------- 标准器 ----------------------------
 INSERT INTO lab_standard_device (id, device_no, name, model, measure_range, trace_org, last_trace_date,
@@ -262,5 +292,37 @@ INSERT INTO lab_standard_device (id, device_no, name, model, measure_range, trac
     (11, 'STD-0011', '恒温油槽',         'HWC-300',     '90-300℃',      '华中国家计量测试中心', '2026-04-11', '2028-04-11', 'IN_USE',  NULL),
     (12, 'STD-0012', '老式标准压力表',   'YB-150',      '0-25MPa',      '上海市计量测试技术研究院','2023-05-19','2025-05-19', 'STOPPED', '停用封存，待报废'),
     (13, 'STD-0013', '标准位移检定仪',   'SJY-50',      '0-50mm',       '中国计量科学研究院',   '2025-07-30', '2026-07-30', 'TRACING', '已打包送上级机构溯源');
+
+-- ---------------------------- 委托-标准器挂接与占用（种子） ----------------------------
+-- 占用中（released_at 为空）的设备互斥；已发行(active_flag=NULL)为历史留痕行，同一设备可多条。
+--   11 号：STD-0005 已过期 + STD-0012 已停用 → 推进检定中必被拦截，且两件都会被点名
+--   12 号：STD-0013 送检中（TRACING）→ 推进拦截
+--   13 号：当前占用 STD-0008，另有一行 STD-0009 收样态被「替换」的留痕
+--   16 号：收样无挂接，演示与 8 号竞争 STD-0002 必失败（8 号 VERIFYING 仍占用）
+--   14 号：无任何挂接行，演示历史委托无标准器仍可查询与推进
+INSERT INTO lab_order_device (id, order_id, device_id, linked_at, cert_valid_snapshot, released_at, released_reason) VALUES
+    -- 占用中：进行中的委托
+    (1,   5,  3,  '2026-09-21 09:45:00', '2027-12-18', NULL, NULL),
+    (2,   6,  7,  '2026-09-20 08:40:00', '2028-01-24', NULL, NULL),
+    (3,   7,  10, '2026-09-19 09:05:00', '2027-08-09', NULL, NULL),
+    (4,   8,  2,  '2026-09-22 09:10:00', '2026-11-02', NULL, NULL),
+    (5,   9,  9,  '2026-09-22 13:50:00', '2026-10-12', NULL, NULL),
+    (6,  10,  1,  '2026-09-23 09:20:00', '2027-11-06', NULL, NULL),
+    (7,  11,  5,  '2026-09-23 08:40:00', '2026-09-02', NULL, NULL),
+    (8,  11,  12, '2026-09-23 08:42:00', '2025-05-19', NULL, NULL),
+    (9,  12,  13, '2026-09-23 09:20:00', '2026-07-30', NULL, NULL),
+    (10, 13,  8,  '2026-09-23 14:00:00', '2027-02-27', NULL, NULL),
+    (11, 15,  6,  '2026-09-24 09:30:00', '2027-10-21', NULL, NULL),
+    (12, 17,  4,  '2026-09-24 09:40:00', '2027-03-15', NULL, NULL),
+    -- 历史留痕：已发放（最终发放，占用释放、记录保留）
+    (13, 1,  3,  '2026-09-18 09:30:00', '2027-12-18', '2026-09-22 16:20:00', 'ISSUED'),
+    (14, 4,  6,  '2026-09-10 09:30:00', '2027-10-21', '2026-09-16 11:30:00', 'ISSUED'),
+    (15, 18, 4,  '2026-09-16 09:00:00', '2027-03-15', '2026-09-20 15:35:00', 'ISSUED'),
+    -- 历史留痕：13 号收样时曾挂 STD-0009，后在收样态被替换为 STD-0008
+    (16, 13, 9,  '2026-09-23 13:45:00', '2026-10-12', '2026-09-23 13:58:00', 'REPLACED'),
+    -- 历史留痕：作废委托 19 号，挂 STD-0011 随作废释放
+    (17, 19, 11, '2026-09-24 11:00:00', '2028-04-11', '2026-09-25 10:20:00', 'VOIDED'),
+    -- 历史留痕：15 号曾从检定中退回收样一次，STD-0006 被释放后又重新挂接（见第 11 行）
+    (18, 15, 6,  '2026-09-24 10:05:00', '2027-10-21', '2026-09-24 15:30:00', 'ROLLBACK_RECEIVED');
 
 SET FOREIGN_KEY_CHECKS = 1;

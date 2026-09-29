@@ -21,10 +21,12 @@
             style="width: 210px"
             @change="selectOrder"
           >
-            <el-option v-for="o in flatOrders" :key="o.id" :label="o.orderNo" :value="o.id">
-              <span>{{ o.orderNo }}</span>
-              <span style="float: right; font-size: 12px; opacity: 0.65">{{ o.statusName }}</span>
-            </el-option>
+            <el-option-group v-for="g in selectGroups" :key="g.status" :label="g.statusName">
+              <el-option v-for="o in g.items" :key="o.id" :label="o.orderNo" :value="o.id">
+                <span>{{ o.orderNo }}</span>
+                <span style="float: right; font-size: 12px; opacity: 0.65">{{ o.statusName }}</span>
+              </el-option>
+            </el-option-group>
           </el-select>
         </div>
         <span class="crumb-arrow">›</span>
@@ -88,15 +90,44 @@
             v-for="item in group.items"
             :key="item.id"
             class="qitem"
+            :class="{ 'is-on': item.id === orderId, 'is-blocked': item.deviceBlocked }"
+            type="button"
+            @click="selectOrder(item.id)"
+          >
+            <b>{{ item.orderNo }}</b>
+            <span>{{ item.instNo }} · {{ item.instrumentName }}</span>
+            <span class="qdevice">
+              <em class="qd-count" :class="{ 'is-zero': !item.deviceCount }">标准器 {{ item.deviceCount || 0 }}</em>
+              <em v-if="item.earliestDeviceValidUntil" class="qd-due"
+                  :class="deviceDueClass(item.earliestDeviceValidUntil)">
+                最早到期 {{ item.earliestDeviceValidUntil }}
+              </em>
+            </span>
+            <span v-if="item.deviceBlocked" class="qd-block">⛔ 标准器不可放行</span>
+            <em v-else>{{ item.clientName }}<template v-if="item.daysWaiting !== null"> · 已 {{ item.daysWaiting }} 天</template></em>
+          </button>
+          <div v-if="!group.items.length" class="qempty">暂无</div>
+        </div>
+
+        <!-- 已作废：只读留档，点开仍可查看挂接与释放记录 -->
+        <div class="qgroup">
+          <div class="qgroup-head">
+            <span class="qdot qdot-VOIDED"></span>
+            已作废
+            <span class="qcount">{{ voidedOrders.length }}</span>
+          </div>
+          <button
+            v-for="item in voidedOrders"
+            :key="item.id"
+            class="qitem is-void"
             :class="{ 'is-on': item.id === orderId }"
             type="button"
             @click="selectOrder(item.id)"
           >
             <b>{{ item.orderNo }}</b>
             <span>{{ item.instNo }} · {{ item.instrumentName }}</span>
-            <em>{{ item.clientName }}<template v-if="item.daysWaiting !== null"> · 已 {{ item.daysWaiting }} 天</template></em>
           </button>
-          <div v-if="!group.items.length" class="qempty">暂无</div>
+          <div v-if="!voidedOrders.length" class="qempty">暂无</div>
         </div>
       </aside>
 
@@ -126,14 +157,25 @@ const nav = useRouter()
 const overview = ref({})
 const queue = ref([])
 const orderList = ref([])
+const voidedOrders = ref([])
 const orderId = ref(null)
 const currentOrder = ref({})
 
-const flatOrders = computed(() => {
-  const list = []
-  queue.value.forEach((group) => group.items.forEach((item) => list.push(item)))
-  return list
+const selectGroups = computed(() => {
+  const groups = queue.value.map((g) => ({ status: g.status, statusName: g.statusName, items: g.items }))
+  if (voidedOrders.value.length) {
+    groups.push({ status: 'VOIDED', statusName: '已作废', items: voidedOrders.value })
+  }
+  return groups
 })
+
+/** 队列徽标：标准器最早到期日按当前日期着色（过期红、临期橙） */
+function deviceDueClass(validUntil) {
+  const days = Math.floor((new Date(validUntil + 'T00:00:00') - new Date()) / 86400000)
+  if (days < 0) return 'is-overdue'
+  if (days <= 60) return 'is-soon'
+  return ''
+}
 
 /** 全局上下文：左侧队列点单 → 顶栏面包屑与流转页同步切换 */
 const lab = {
@@ -175,7 +217,11 @@ async function loadCurrent() {
 
 async function loadQueue() {
   queue.value = await orderApi.queue()
-  orderList.value = await orderApi.list()
+  const all = await orderApi.list()
+  orderList.value = all
+  voidedOrders.value = all
+    .filter((o) => o.status === 'VOIDED')
+    .map((o) => ({ id: o.id, orderNo: o.orderNo, instNo: o.instNo, instrumentName: o.instrumentName }))
 }
 
 async function loadOverview() {

@@ -13,16 +13,26 @@ http.interceptors.response.use(
     const body = res.data
     if (body && typeof body === 'object' && Object.prototype.hasOwnProperty.call(body, 'ok')) {
       if (body.ok) return body.data
-      ElMessage.error(body.message || '操作失败')
-      return Promise.reject(new Error(body.message || '操作失败'))
+      // 业务失败也把结构化信息抛给调用方（占用冲突需逐件标红并保留原选择）
+      const err = new Error(body.message || '操作失败')
+      err.biz = true
+      err.conflicts = body.conflicts || null
+      err.busyOrderNos = body.busyOrderNos || null
+      if (!res.config || !res.config.hideError) ElMessage.error(body.message || '操作失败')
+      return Promise.reject(err)
     }
     return body
   },
   (err) => {
     const body = err.response && err.response.data
     const message = (body && body.message) || err.message || '网络异常，请稍后再试'
-    ElMessage.error(message)
-    return Promise.reject(new Error(message))
+    const bizErr = new Error(message)
+    bizErr.biz = true
+    bizErr.status = err.response && err.response.status
+    bizErr.conflicts = (body && body.conflicts) || null
+    bizErr.busyOrderNos = (body && body.busyOrderNos) || null
+    if (!err.config || !err.config.hideError) ElMessage.error(message)
+    return Promise.reject(bizErr)
   }
 )
 
@@ -61,13 +71,18 @@ export const orderApi = {
   detail: (id) => http.get(`/calibration-orders/${id}`),
   create: (data) => http.post('/calibration-orders', data),
   result: (id, data) => http.post(`/calibration-orders/${id}/result`, data),
-  advance: (id) => http.post(`/calibration-orders/${id}/advance`),
-  rollback: (id) => http.post(`/calibration-orders/${id}/rollback`)
+  advance: (id) => http.post(`/calibration-orders/${id}/advance`, null, { hideError: true }),
+  rollback: (id) => http.post(`/calibration-orders/${id}/rollback`),
+  void: (id) => http.post(`/calibration-orders/${id}/void`),
+  deviceOptions: (id) => http.get(`/calibration-orders/${id}/device-options`),
+  saveDevices: (id, deviceIds) =>
+    http.put(`/calibration-orders/${id}/devices`, { deviceIds }, { hideError: true })
 }
 
 /** 模块五：标准器 */
 export const deviceApi = {
   list: () => http.get('/standard-devices'),
   create: (data) => http.post('/standard-devices', data),
-  setStatus: (id, status) => http.post(`/standard-devices/${id}/status`, { status })
+  setStatus: (id, status) => http.post(`/standard-devices/${id}/status`, { status }),
+  reviseTrace: (id, data) => http.post(`/standard-devices/${id}/trace`, data)
 }

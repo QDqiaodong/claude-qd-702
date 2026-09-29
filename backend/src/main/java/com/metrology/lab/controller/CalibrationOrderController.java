@@ -5,6 +5,7 @@ import java.util.List;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -76,5 +77,27 @@ public class CalibrationOrderController {
     @PostMapping("/{id}/rollback")
     public ApiResponse<Views.OrderView> rollback(@PathVariable Long id) {
         return ApiResponse.success("流转已回退一格", orderService.rollback(id));
+    }
+
+    /** 作废委托（未发放均可），已挂标准器随之释放 */
+    @PostMapping("/{id}/void")
+    public ApiResponse<Views.OrderView> voidOrder(@PathVariable Long id) {
+        return ApiResponse.success("委托已作废，标准器占用已释放", orderService.voidOrder(id));
+    }
+
+    /** 挂接选择器：全部标准器 + 实时占用冲突 + 本笔已选 */
+    @GetMapping("/{id}/device-options")
+    public ApiResponse<List<Views.DeviceOptionView>> deviceOptions(@PathVariable Long id) {
+        return ApiResponse.success(orderService.deviceOptions(id));
+    }
+
+    /**
+     * 保存挂接清单（挂接 / 替换 / 解除同一入口，收样态可用）。
+     * 最终是否允许由服务端判定：占用冲突、标准器失效都在这一关拦住。
+     */
+    @PutMapping("/{id}/devices")
+    public ApiResponse<Views.OrderView> saveDevices(@PathVariable Long id,
+                                                    @RequestBody CalibrationOrderDtos.DeviceLinkReq req) {
+        return ApiResponse.success("标准器挂接清单已保存", orderService.saveDevices(id, req));
     }
 }
